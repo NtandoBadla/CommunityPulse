@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy.orm import relationship
 
 from backend.database import Base
 
@@ -42,4 +43,10 @@ class Clinic(Base):
         Integer,
         nullable=False,
         default=100
+    )
+
+    metrics = relationship(
+        "ClinicMetric",
+        back_populates="clinic",
+        cascade="all, delete-orphan"
     )
