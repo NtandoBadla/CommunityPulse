@@ -1,0 +1,1 @@
+from backend.models.clinic import Clinic
