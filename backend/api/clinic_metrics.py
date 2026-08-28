@@ -7,6 +7,7 @@ from backend.models.clinic_metric import ClinicMetric
 from backend.schemas.clinic_metric import ClinicMetricCreate
 from backend.services.historical_service import get_hourly_crowding_averages
 from backend.services.advice_service import generate_advice
+from backend.services.distance_service import calculate_distance_km
 
 from backend.services.prediction_service import (
     calculate_crowding,
@@ -220,4 +221,129 @@ def get_crowding_forecast(
         "clinic_name": clinic.name,
         "forecast": forecast,
         "advice": advice
+    }
+@router.get("/{clinic_id}/recommendations")
+def get_clinic_recommendations(
+    clinic_id: int,
+    db: Session = Depends(get_db)
+):
+
+    selected_clinic = (
+        db.query(Clinic)
+        .filter(Clinic.id == clinic_id)
+        .first()
+    )
+
+    if not selected_clinic:
+        raise HTTPException(
+            status_code=404,
+            detail="Clinic not found"
+        )
+
+    latest_selected_metric = (
+        db.query(ClinicMetric)
+        .filter(
+            ClinicMetric.clinic_id == clinic_id
+        )
+        .order_by(
+            ClinicMetric.recorded_at.desc()
+        )
+        .first()
+    )
+
+    if not latest_selected_metric:
+        raise HTTPException(
+            status_code=404,
+            detail="No metrics available for selected clinic"
+        )
+
+    selected_crowding = calculate_crowding(
+        latest_selected_metric.patients_waiting,
+        selected_clinic.capacity
+    )
+
+    clinics = (
+        db.query(Clinic)
+        .filter(Clinic.id != clinic_id)
+        .all()
+    )
+
+    recommendations = []
+
+    for clinic in clinics:
+
+        latest_metric = (
+            db.query(ClinicMetric)
+            .filter(
+                ClinicMetric.clinic_id == clinic.id
+            )
+            .order_by(
+                ClinicMetric.recorded_at.desc()
+            )
+            .first()
+        )
+
+        if not latest_metric:
+            continue
+
+        crowding = calculate_crowding(
+            latest_metric.patients_waiting,
+            clinic.capacity
+        )
+
+        # Only recommend clinics that are less crowded
+        if crowding >= selected_crowding:
+            continue
+
+        estimated_wait = calculate_estimated_wait(
+            latest_metric.patients_waiting,
+            latest_metric.patients_served,
+            latest_metric.average_wait_minutes
+        )
+
+        distance = None
+
+        if (
+            selected_clinic.latitude is not None
+            and selected_clinic.longitude is not None
+            and clinic.latitude is not None
+            and clinic.longitude is not None
+        ):
+            distance = calculate_distance_km(
+                selected_clinic.latitude,
+                selected_clinic.longitude,
+                clinic.latitude,
+                clinic.longitude
+            )
+
+        level = get_crowding_level(crowding)
+
+        recommendations.append({
+            "clinic_id": clinic.id,
+            "clinic_name": clinic.name,
+            "location": clinic.location,
+            "crowding_percentage": crowding,
+            "crowding_level": level,
+            "estimated_wait_minutes": estimated_wait,
+            "distance_km": distance,
+            "reason": "Lower crowding than selected clinic"
+        })
+
+    # Prefer clinics that are both less crowded and closer.
+    recommendations.sort(
+        key=lambda x: (
+            x["distance_km"]
+            if x["distance_km"] is not None
+            else 999999,
+            x["crowding_percentage"]
+        )
+    )
+
+    return {
+        "selected_clinic": {
+            "id": selected_clinic.id,
+            "name": selected_clinic.name,
+            "crowding_percentage": selected_crowding
+        },
+        "recommendations": recommendations[:3]
     }
